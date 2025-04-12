@@ -88,6 +88,11 @@ The application uses the following data sources:
 - `cleaned_mutual_fund_data.csv` - Mutual fund information
 - `mf_holdings_data.csv` - Mutual fund holdings data
 
+## Important Note
+
+The large data file `mf_holdings_data.csv` (159MB) is not included in this repository due to GitHub file size limits.
+Please request this file separately or regenerate it using the data processing scripts if needed.
+
 ## Contributing
 
 1. Fork the repository
