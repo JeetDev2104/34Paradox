@@ -1,0 +1,123 @@
+---
+title: 'Chat Interface Component'
+description: 'AI-powered financial assistant chat interface'
+---
+
+# Chat Interface Component
+
+The ChatInterface component provides an intelligent conversational interface that allows users to ask questions about financial markets, stocks, and news using natural language.
+
+## Component Architecture
+
+```tsx
+const ChatInterface: React.FC = () => {
+  // State management for chat messages and input
+  // Handles message processing and API calls
+  // Renders the chat interface UI
+};
+```
+
+## Features
+
+### Intelligent Query Processing
+
+The chat interface intelligently processes user queries to:
+- Identify stock-related questions
+- Recognize specific financial instruments
+- Handle market trend inquiries
+- Respond to news-related questions
+
+### Stock Price Information
+
+The chat assistant provides accurate stock price information with:
+- Current trading prices
+- Change percentage
+- Currency-appropriate formatting
+- Special handling for Indian stocks (₹) vs US stocks ($)
+
+### Predefined Response Patterns
+
+The component includes specialized response patterns for common queries:
+- Stock price inquiries (e.g., "What is the MRF stock price?")
+- IPO information
+- Profitability metrics
+- Market share analysis
+- Financial forecasts
+
+### Web Information Search
+
+For questions without predefined answers, the component:
+- Extracts key information from the query
+- Searches for relevant financial information
+- Formats responses in a user-friendly manner
+- Provides source attribution when appropriate
+
+## Usage
+
+The ChatInterface component appears in the sidebar of the main dashboard and allows users to:
+- Type natural language questions about finances
+- Receive AI-generated responses with accurate information
+- Get follow-up suggestions for deeper exploration
+- Access stock-specific details through conversation
+
+## Implementation Details
+
+The ChatInterface component implements several key functions:
+
+### Message Processing
+
+```tsx
+const processSpecificQuery = (query: string): string | null => {
+  // Process queries with predefined answers
+  // Return null if no predefined answer is available
+};
+
+const searchWebForInfo = async (query: string): Promise<string> => {
+  // Process general queries by searching for information
+  // Generate appropriate responses based on query type
+};
+```
+
+### Stock Price Handling
+
+```tsx
+// Enhanced stock price lookup for any stock name/symbol
+if (keywords.includes("stock") && keywords.includes("price")) {
+  // Extract potential stock name or symbol
+  // Check against known stock database
+  // Format response with appropriate currency symbol
+}
+```
+
+### Message Display
+
+```tsx
+{messages.map((message) => (
+  <div
+    key={message.id}
+    className={`flex ${
+      message.isUser ? "justify-end" : "justify-start"
+    }`}
+  >
+    <div
+      className={`max-w-[80%] p-3 rounded-lg ${
+        message.isUser
+          ? "bg-blue-500 text-white"
+          : "bg-gray-100 text-gray-900"
+      }`}
+    >
+      <p className="whitespace-pre-wrap break-words">
+        {message.content}
+      </p>
+    </div>
+  </div>
+))}
+```
+
+## Styling
+
+The ChatInterface uses a card-based design with:
+- Clear visual distinction between user and assistant messages
+- Responsive layout that works on all devices
+- Smooth scrolling to latest messages
+- Input field with send button 

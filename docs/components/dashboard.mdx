@@ -1,0 +1,96 @@
+---
+title: 'Dashboard Component'
+description: 'Main dashboard interface for NewsSense Financial'
+---
+
+# Dashboard Component
+
+The Dashboard component is the central interface of NewsSense Financial, providing users with a comprehensive view of financial instruments, charts, news, and market analysis.
+
+## Component Architecture
+
+```tsx
+const Dashboard: React.FC = () => {
+  // State management for financial instruments, news, etc.
+  // Handles instrument selection, search functionality, and data fetching
+  // Renders the main dashboard interface
+};
+```
+
+## Features
+
+### Stock Chart Visualization
+
+The dashboard includes an interactive stock chart that:
+- Displays price history with customizable timeframes
+- Shows price movement patterns
+- Includes volume indicators
+- Supports zooming and interaction
+
+### Financial Instrument Selection
+
+Users can select financial instruments through:
+- A search function with autocomplete
+- Predefined lists of popular stocks
+- Recent selections history
+- Category-based browsing
+
+### News Tabs
+
+The dashboard organizes news in three distinct tabs:
+
+1. **Relevant News**: News directly related to the selected instrument
+2. **All News**: General financial news that may be of interest
+3. **Market Analysis**: AI-generated analysis of market conditions
+
+### Market Metrics
+
+Key financial metrics are displayed for each instrument:
+- Current price and change percentage
+- Market capitalization
+- Trading volume
+- Sector performance
+- 52-week performance
+
+## Usage
+
+The Dashboard component is the main entry point for user interaction. It manages:
+
+- Data fetching for financial instruments
+- News retrieval and categorization
+- User interface state
+- Navigation between different data views
+
+## Implementation Details
+
+The Dashboard component implements several key functions:
+
+### Data Fetching
+
+```tsx
+const fetchInitialData = async () => {
+  // Fetch initial stocks, news, and market data
+};
+
+const handleSearch = async (query: string) => {
+  // Search for instruments based on user query
+};
+
+const handleInstrumentSelect = async (instrumentId: string) => {
+  // Fetch details for a selected instrument
+};
+```
+
+### UI Management
+
+```tsx
+// Tab management for news sections
+const [activeTab, setActiveTab] = useState<string>("relevant-news");
+
+// Responsive layout considerations
+const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+```
+
+## Styling
+
+The Dashboard uses Tailwind CSS for styling, with responsive design principles that adapt to different screen sizes, from mobile to desktop. 
