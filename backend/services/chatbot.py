@@ -9,6 +9,7 @@ import pandas as pd
 import os
 import math
 import json
+from services.gemini_service import gemini_service
 
 logger = logging.getLogger(__name__)
 
@@ -309,46 +310,41 @@ class ChatbotService:
             entities = self._extract_entities(query)
             logger.info(f"Extracted entities: {entities}")
             
-            # If no entities found, try to extract keywords
-            if not entities:
-                keywords = query.lower().split()
-                logger.info(f"No entities found, using keywords: {keywords}")
-                
-                # Try to match keywords with company names or fund names
-                for company in self.company_names:
-                    if company and any(kw in company.lower() for kw in keywords if len(kw) > 3):
-                        entities.append(company)
-                
-                for fund in self.fund_names:
-                    if fund and any(kw in fund.lower() for kw in keywords if len(kw) > 3):
-                        entities.append(fund)
-            
-            # Get relevant news and financial data
+            # Initialize response data
             news_items = []
             financial_data = {}
             
-            for entity in entities:
-                # Get news related to the entity
-                entity_news = await db_service.get_news_by_entity_advanced(entity)
-                if entity_news:
-                    news_items.extend(entity_news)
-                
-                # Try to get financial data
-                financial_item = await db_service.get_financial_data_by_identifier(entity)
-                if financial_item:
-                    financial_data[financial_item["type"]] = financial_item["data"]
+            # Search for news related to query
+            if entities:
+                for entity in entities:
+                    # Get financial data for the entity
+                    entity_data = await db_service.get_financial_data_by_identifier(entity)
+                    if entity_data:
+                        financial_data[entity_data["type"]] = entity_data["data"]
                     
-                    # Get holdings for funds
-                    if financial_item["type"] == "fund":
-                        holdings = await db_service.get_holdings_data(entity)
-                        if holdings:
-                            financial_data["holdings"] = holdings[:10]
+                    # Get news about the entity
+                    entity_news = await db_service.get_news_by_entity_advanced(entity)
+                    if entity_news:
+                        news_items.extend(entity_news)
             
-            # If looking for news specifically, get recent news
-            if "news" in query.lower() and not news_items:
-                recent_news = await db_service.get_recent_news(5)
-                if recent_news:
-                    news_items = recent_news
+            # If no specific entities found, search generic news
+            if not news_items:
+                query_terms = query.split()
+                for term in query_terms:
+                    if len(term) > 3:  # Skip short words
+                        term_news = await db_service.search_news(term)
+                        if term_news:
+                            news_items.extend(term_news)
+                            
+            # Deduplicate news
+            unique_news = []
+            seen_titles = set()
+            for news in news_items:
+                if news.get("title") not in seen_titles:
+                    seen_titles.add(news.get("title"))
+                    unique_news.append(news)
+                    
+            news_items = unique_news
             
             # If still no news or minimal financial data, search external sources
             if (len(news_items) < 2 or not financial_data) and not is_entity_only:
@@ -360,8 +356,27 @@ class ChatbotService:
                             news["source"] = f"[External] {news['source']}"
                     news_items.extend(external_news)
             
-            # Generate response
-            response = self._generate_response(query, news_items, financial_data)
+            # Use Gemini for enhanced responses
+            context = {
+                "news": news_items[:5] if news_items else [],
+            }
+            
+            # Add financial data to context
+            if financial_data:
+                for key, value in financial_data.items():
+                    context[key] = value
+            
+            # Get enhanced response from Gemini if available
+            gemini_response = await gemini_service.get_financial_insights(query, context)
+            
+            if gemini_response["success"]:
+                # Use Gemini's response
+                logger.info("Using Gemini for enhanced response")
+                response = gemini_response["response"]
+            else:
+                # Fallback to our standard response generator
+                logger.info("Falling back to standard response generator")
+                response = self._generate_response(query, news_items, financial_data)
             
             # Reset state
             state["state"] = "initial"
@@ -371,9 +386,10 @@ class ChatbotService:
             
             return {
                 "answer": response,
-                "confidence": 0.85 if entities or news_items or financial_data else 0.5,
+                "confidence": 0.95 if gemini_response["success"] else (0.85 if entities or news_items or financial_data else 0.5),
                 "related_news": news_items[:5],
-                "financial_data": financial_data
+                "financial_data": financial_data,
+                "source": gemini_response.get("source", "standard") if gemini_response["success"] else "standard"
             }
             
         except Exception as e:
