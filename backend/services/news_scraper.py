@@ -9,6 +9,8 @@ import os
 from bs4 import BeautifulSoup
 import random
 from .database import db_service
+from services.sentiment_analysis import SentimentAnalysisService
+from services.entity_extraction import EntityExtractionService
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,10 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
 ]
+
+# Initialize the sentiment analysis service
+sentiment_analysis_service = SentimentAnalysisService()
+entity_extraction_service = EntityExtractionService()
 
 class NewsScraperService:
     def __init__(self):
@@ -52,6 +58,14 @@ class NewsScraperService:
             }
         ]
         
+        # List of known non-listed entities to filter out false stock information
+        self.non_listed_entities = [
+            'oyo', 'swiggy', 'zomato', 'byjus', 'ola', 'paytm', 'flipkart', 
+            'meesho', 'dunzo', 'upgrad', 'unacademy', 'cred', 'grofers', 'bigbasket',
+            'zerodha', 'groww', 'pharmeasy', 'udaan', 'policybazaar', 'lenskart',
+            'delhivery', 'xiaomi', 'oneplus'
+        ]
+    
     async def fetch_page(self, url: str) -> Optional[str]:
         """Fetch a webpage with headers rotation"""
         headers = {
@@ -246,11 +260,17 @@ class NewsScraperService:
         tasks = [self.parse_source(source) for source in self.sources]
         results = await asyncio.gather(*tasks)
         
+        # Also fetch from Google News for general market news
+        google_results = await self.fetch_google_news("stock market finance news india", days=3, max_results=15)
+        
         # Flatten results
         all_news = []
         for source_news in results:
             all_news.extend(source_news)
             
+        # Add Google News results
+        all_news.extend(google_results)
+        
         logger.info(f"Fetched {len(all_news)} news items from all sources")
         return all_news
         
@@ -272,187 +292,377 @@ class NewsScraperService:
             # First try to get from database
             news_items = await db_service.get_news_by_entity_advanced(company_name, days)
             
-            # If we don't have enough news, try scraping more
+            # If we don't have enough news, try to get from Google News
             if len(news_items) < 5:
-                # Try to scrape company-specific news
-                for source in self.sources:
-                    # Create company-specific URL
-                    base_url = source["url"]
-                    company_url = f"{base_url}?q={company_name.replace(' ', '+')}"
+                # Check if this is a non-listed entity
+                is_non_listed = any(entity.lower() in company_name.lower() for entity in self.non_listed_entities)
+                
+                # For non-listed entities, add clarification in the search
+                search_query = company_name
+                if is_non_listed:
+                    search_query = f"{company_name} private company funding"
                     
-                    # Create a temporary source config with the company-specific URL
-                    company_source = source.copy()
-                    company_source["url"] = company_url
-                    
-                    # Scrape the company-specific news
-                    company_news = await self.parse_source(company_source)
-                    if company_news:
-                        # Store in database and add to results
-                        await db_service.store_scraped_news(company_news)
-                        news_items.extend(company_news)
+                # Get news from Google
+                google_news = await self.fetch_google_news(search_query, days=days, max_results=10)
+                
+                if google_news:
+                    # Store in database and add to results
+                    await db_service.store_scraped_news(google_news)
+                    news_items.extend(google_news)
             
-            return news_items
+            # Remove duplicates
+            seen_urls = set()
+            unique_news_items = []
+            
+            for item in news_items:
+                url = item.get('url', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    unique_news_items.append(item)
+            
+            return unique_news_items[:20]  # Limit to 20 items
         except Exception as e:
             logger.error(f"Error searching company news for {company_name}: {str(e)}")
             return []
 
-    async def search_news(self, query: str, limit: int = 5) -> List[Dict]:
+    async def search_news(self, query: str, limit: int = 10) -> List[Dict]:
         """Search for news articles based on the query"""
         try:
-            # Use Google News API or a similar alternative
-            # For demo purposes, we'll simulate the API response with structured data
-            news_results = await self._search_news_api(query, limit)
+            # Search in database first
+            db_results = await db_service.search_news(query, limit)
             
-            # If we have external API credentials, use them
-            # Otherwise, fall back to our simulated results
-            if not news_results:
-                news_results = self._generate_simulated_news(query, limit)
+            # If we have enough results, return them
+            if len(db_results) >= limit:
+                return db_results[:limit]
                 
-            return news_results
+            # Otherwise, also search in Google News
+            google_results = await self.fetch_google_news(query, days=30, max_results=limit)
+            
+            # Store the new results in the database
+            if google_results:
+                await db_service.store_scraped_news(google_results)
+                
+            # Combine results, prioritizing database results
+            all_results = db_results + [r for r in google_results if r.get('url') not in [dr.get('url') for dr in db_results]]
+            
+            return all_results[:limit]
         except Exception as e:
             logger.error(f"Error searching news: {str(e)}")
             return []
     
-    async def _search_news_api(self, query: str, limit: int) -> List[Dict]:
-        """Search news using external APIs"""
+    async def fetch_google_news(self, query: str, days: int = 7, max_results: int = 10) -> List[Dict]:
+        """Fetch news from Google News search"""
         try:
-            # Check for API keys in environment
-            news_api_key = os.environ.get("NEWS_API_KEY")
-            if not news_api_key:
+            # Format query for Google News search
+            query = query.replace(' ', '+')
+            
+            # Adjust query for financial news
+            if not any(term in query.lower() for term in ['finance', 'stock', 'market', 'invest']):
+                query += '+finance+stock+market'
+                
+            # Calculate date range in required Google format
+            today = datetime.now()
+            if days > 0:
+                past_date = today - timedelta(days=days)
+                date_range = f"&tbs=cdr:1,cd_min:{past_date.strftime('%m/%d/%Y')},cd_max:{today.strftime('%m/%d/%Y')}"
+            else:
+                date_range = ""
+                
+            # Construct URL with date range
+            url = f"https://news.google.com/search?q={query}{date_range}&hl=en-US&gl=US&ceid=US:en"
+            
+            html = await self.fetch_page(url)
+            if not html:
+                logger.error(f"Failed to fetch Google News for query: {query}")
                 return []
                 
-            # Use NewsAPI for demonstration purposes
-            encoded_query = query.replace(" ", "%20")
-            url = f"https://newsapi.org/v2/everything?q={encoded_query}&apiKey={news_api_key}&pageSize={limit}"
+            # Parse Google News results
+            soup = BeautifulSoup(html, 'html.parser')
+            articles = soup.select('article')
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
+            results = []
+            count = 0
+            
+            for article in articles:
+                if count >= max_results:
+                    break
+                    
+                try:
+                    # Extract elements
+                    title_elem = article.select_one('h3 a')
+                    time_elem = article.select_one('time')
+                    source_elem = article.select_one('div[data-n-aus]')
+                    
+                    if not (title_elem and time_elem):
+                        continue
                         
-                        if "articles" in data:
-                            results = []
-                            for article in data["articles"][:limit]:
-                                # Transform to our standard news format
-                                results.append({
-                                    "title": article.get("title", ""),
-                                    "summary": article.get("description", ""),
-                                    "date": article.get("publishedAt", datetime.now().isoformat()),
-                                    "source": article.get("source", {}).get("name", "External Source"),
-                                    "url": article.get("url", ""),
-                                    "sentiment": "neutral",  # Default sentiment
-                                    "sentiment_score": 0.5  # Neutral score
-                                })
-                            return results
-            return []
+                    title = title_elem.text
+                    
+                    # Extract href and construct full URL
+                    article_url = title_elem.get('href', '')
+                    if article_url.startswith('./'):
+                        article_url = 'https://news.google.com/' + article_url[2:]
+                    
+                    # Extract source and date
+                    source = source_elem.text if source_elem else "Google News"
+                    
+                    # Parse date
+                    if time_elem.get('datetime'):
+                        published_date = datetime.fromisoformat(time_elem.get('datetime')).isoformat()
+                    else:
+                        # If no datetime attribute, use the text content (like "4 hours ago")
+                        time_text = time_elem.text
+                        published_date = self._parse_relative_time(time_text)
+                        
+                    # Generate summary by scraping the target article when possible
+                    summary = await self._fetch_article_summary(article_url)
+                    if not summary:
+                        # If we couldn't get the summary, use the title as a fallback
+                        summary = title
+                        
+                    # Run sentiment analysis
+                    sentiment_analysis = sentiment_analysis_service.analyze_text(title + " " + summary)
+                    
+                    # Extract entities
+                    entities = entity_extraction_service.extract_entities(title + " " + summary)
+                    
+                    # Extract keywords
+                    keywords = entity_extraction_service.extract_keywords(title + " " + summary)
+                    
+                    news_item = {
+                        "title": title,
+                        "summary": summary,
+                        "url": article_url,
+                        "source": source,
+                        "date": published_date,
+                        "entities": entities,
+                        "sentiment": sentiment_analysis["sentiment"],
+                        "sentiment_score": sentiment_analysis["sentiment_score"],
+                        "keywords": keywords
+                    }
+                    
+                    # Filter out articles about non-listed companies falsely presented as stocks
+                    if not self._validate_news_item(news_item):
+                        continue
+                        
+                    results.append(news_item)
+                    count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error parsing Google News article: {str(e)}")
+                    continue
+                    
+            return results
+                
         except Exception as e:
-            logger.error(f"Error in news API search: {str(e)}")
+            logger.error(f"Error in Google News search for {query}: {str(e)}")
             return []
-    
+            
+    def _parse_relative_time(self, time_text: str) -> str:
+        """Parse relative time strings like '4 hours ago' into ISO format dates"""
+        now = datetime.now()
+        try:
+            if 'min' in time_text:
+                minutes = int(re.search(r'(\d+)', time_text).group(1))
+                date = now - timedelta(minutes=minutes)
+            elif 'hour' in time_text:
+                hours = int(re.search(r'(\d+)', time_text).group(1))
+                date = now - timedelta(hours=hours)
+            elif 'day' in time_text:
+                days = int(re.search(r'(\d+)', time_text).group(1))
+                date = now - timedelta(days=days)
+            elif 'week' in time_text:
+                weeks = int(re.search(r'(\d+)', time_text).group(1))
+                date = now - timedelta(weeks=weeks)
+            elif 'month' in time_text:
+                months = int(re.search(r'(\d+)', time_text).group(1))
+                date = now - timedelta(days=months*30)  # Approximation
+            else:
+                date = now
+            return date.isoformat()
+        except Exception:
+            return now.isoformat()
+            
+    async def _fetch_article_summary(self, url: str) -> str:
+        """Fetch and extract a summary from the article content"""
+        try:
+            html = await self.fetch_page(url)
+            if not html:
+                return ""
+                
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Try various ways to find the article body
+            article_body = None
+            for selector in ['article', '.article-body', '.article-content', '.content', '.story-content', 'p']:
+                article_body = soup.select(selector)
+                if article_body and len(article_body) > 1:
+                    break
+                    
+            if not article_body:
+                # Find all paragraphs as a fallback
+                article_body = soup.find_all('p')
+                
+            # Extract text from paragraphs
+            paragraphs = []
+            for elem in article_body:
+                if elem.name == 'p' and elem.text and len(elem.text) > 50:  # Only substantial paragraphs
+                    paragraphs.append(elem.text.strip())
+                    
+            if paragraphs:
+                # Take first paragraph or a combination of the first few
+                summary = ' '.join(paragraphs[:2])
+                # Limit length
+                if len(summary) > 500:
+                    summary = summary[:497] + "..."
+                return summary
+                
+            # If no good paragraphs found, look for meta description
+            meta_desc = soup.find('meta', {'name': 'description'}) or soup.find('meta', {'property': 'og:description'})
+            if meta_desc and meta_desc.get('content'):
+                return meta_desc.get('content')
+                
+            return ""
+                
+        except Exception as e:
+            logger.error(f"Error fetching article summary for {url}: {str(e)}")
+            return ""
+            
+    def _validate_news_item(self, news_item: Dict) -> bool:
+        """Validate a news item to filter out articles about non-listed entities presented as stocks"""
+        title = news_item['title'].lower()
+        summary = news_item['summary'].lower()
+        content = title + " " + summary
+        
+        # Extract company entities
+        companies = news_item['entities'].get('companies', [])
+        
+        # Check for non-listed entities
+        for entity in self.non_listed_entities:
+            # If the entity is mentioned
+            if entity.lower() in content:
+                # And it appears to be presented as a stock
+                stock_terms = ['stock price', 'share price', 'stock', 'listed', 'ipo price', 'market price']
+                if any(term in content for term in stock_terms):
+                    # Check if the article clarifies it's not listed
+                    clarifications = ['not listed', 'not publicly traded', 'private company', 
+                                     'planning ipo', 'upcoming ipo', 'pre-ipo', 'preparing for ipo']
+                    if not any(clarify in content for clarify in clarifications):
+                        # If no clarification, this might be misleading
+                        return False
+        
+        return True
+
     def _generate_simulated_news(self, query: str, limit: int) -> List[Dict]:
         """Generate simulated news for demo purposes when API is not available"""
-        # Identify query type to generate more relevant simulated news
-        query_lower = query.lower()
-        
-        # Generate a clean version of the query for URL creation
-        clean_query = re.sub(r'[^\w\s-]', '', query).strip().lower().replace(' ', '-')
-        # Add date component for URL
-        today = datetime.now().strftime("%Y/%m/%d")
-        
-        # Check if query is asking about market movements
-        if any(word in query_lower for word in ["market", "stock", "index", "nifty", "sensex", "down", "up", "fall", "rise"]):
-            templates = [
-                {"title": "Market Analysis: {query} Shows Volatility", 
-                 "summary": "Markets related to {query} have shown significant volatility in recent trading sessions with experts divided on future direction. Trading volumes increased by 15% compared to the previous week, suggesting heightened investor activity. Technical analysts point to key resistance levels that could determine short-term movements."},
-                {"title": "Investors React to {query} Movements", 
-                 "summary": "Trading patterns around {query} reflect investor sentiment shifting amid economic uncertainty. Institutional investors have been net buyers while retail participation has decreased. Market experts suggest monitoring upcoming economic data releases which could significantly impact price action."},
-                {"title": "Analyst Forecast: {query} Expected to Stabilize", 
-                 "summary": "Leading financial analysts predict that after recent fluctuations, {query} will likely find stability in coming weeks. This follows the release of better-than-expected earnings reports from key market constituents. Foreign institutional investors have increased their positions, suggesting confidence in medium-term prospects."},
-                {"title": "Economic Indicators Impact {query}", 
-                 "summary": "Recent economic data releases have influenced market behavior around {query}, with traders closely watching upcoming reports. Inflation numbers released yesterday came in slightly below expectations, providing some relief to interest rate concerns. Sector rotation has been observed with defensives outperforming growth stocks."},
-                {"title": "Technical Analysis: {query} Approaching Key Levels", 
-                 "summary": "Chart patterns reveal that {query} is testing critical technical levels that could determine future price action. The 200-day moving average has acted as strong support during recent pullbacks. Trading volumes suggest accumulation is happening at current levels, potentially setting up for a move higher if broader market sentiment improves."}
-            ]
-            sources = ["MarketWatch", "Bloomberg", "Financial Express", "Economic Times", "Moneycontrol"]
-            url_templates = [
-                "https://www.{source}.com/markets/{date}/{query}-market-analysis",
-                "https://www.{source}.com/investing/{date}/what-investors-should-know-about-{query}",
-                "https://www.{source}.com/markets/stocks/{date}/{query}-forecast",
-                "https://www.{source}.com/economy/{date}/economic-indicators-impact-on-{query}",
-                "https://www.{source}.com/trading/{date}/technical-analysis-{query}"
-            ]
-        # Check if query is about a company's financial performance
-        elif any(word in query_lower for word in ["earnings", "revenue", "profit", "performance", "quarterly", "results"]):
-            templates = [
-                {"title": "Earnings Report: {query} Exceeds Expectations", 
-                 "summary": "The latest financial results for {query} have surpassed analyst estimates, driving positive market sentiment. Revenue grew by 12.3% year-over-year, while earnings per share came in at ₹15.7, exceeding the consensus estimate of ₹14.2. The company also announced expanded product offerings and geographic reach during the earnings call."},
-                {"title": "Revenue Growth Slows for {query}", 
-                 "summary": "While still profitable, {query} reported reduced growth compared to previous quarters, raising questions about future trajectory. The company cited supply chain constraints and increased input costs as factors in the slowdown. Management has revised guidance for the upcoming quarter, projecting more conservative growth targets."},
-                {"title": "{query} Announces Strategic Restructuring", 
-                 "summary": "Following recent performance metrics, {query} leadership has outlined plans for organizational changes to enhance profitability. The restructuring aims to reduce operating costs by approximately 8% while focusing resources on high-growth business segments. Analysts have responded positively to the announcement, with several upgrading their outlook."},
-                {"title": "Investor Call Highlights: {query} Future Outlook", 
-                 "summary": "During the recent earnings call, {query} management discussed future prospects and addressed market concerns. Key highlights included planned capital expenditure of ₹1,200 crore for capacity expansion and digital transformation initiatives. The company also addressed questions about competitive pressures and their strategy to maintain market share."},
-                {"title": "Analyst Recommendations Update: {query}", 
-                 "summary": "Financial institutions have revised their ratings for {query} following the latest performance data. Of the 18 analysts covering the stock, 12 now maintain a 'buy' rating, 5 have a 'hold' recommendation, and 1 suggests 'sell'. The average price target has been raised by 8.5% to ₹2,450, reflecting increased confidence in long-term growth prospects."}
-            ]
-            sources = ["CNBC", "Reuters", "Financial Times", "Bloomberg Quint", "Business Standard"]
-            url_templates = [
-                "https://www.{source}.com/companies/{date}/{query}-earnings-report",
-                "https://www.{source}.com/markets/companies/{date}/{query}-revenue-growth",
-                "https://www.{source}.com/business/{date}/{query}-restructuring-announcement",
-                "https://www.{source}.com/investing/stocks/{date}/{query}-investor-call",
-                "https://www.{source}.com/analysis/{date}/{query}-analyst-recommendations"
-            ]
-        # Check if query is about global economic news
-        elif any(word in query_lower for word in ["global", "economy", "recession", "inflation", "rates", "fed", "rbi", "bank"]):
-            templates = [
-                {"title": "Global Economic Trends: {query} Impact Assessment", 
-                 "summary": "Analysis of how {query} is affected by broader economic shifts shows varied outcomes across different regions. Developed markets are showing resilience despite tightening monetary policies, while emerging economies face additional challenges from currency pressures. Economists project continued volatility but maintain that fundamentals remain stronger than during previous downturns."},
-                {"title": "Central Bank Decisions and {query}", 
-                 "summary": "Recent monetary policy changes have created ripple effects for {query}, with markets adjusting to new interest rate expectations. The 25 basis point increase announced last week was accompanied by hawkish commentary suggesting further tightening may be necessary to contain inflation. Bond yields have responded accordingly, with the yield curve showing signs of normalization."},
-                {"title": "Inflation Concerns Shape {query} Outlook", 
-                 "summary": "Rising inflation metrics are influencing forecasts related to {query}, with increased volatility expected. Core inflation remains elevated at 5.2% year-over-year, well above central bank targets. Commodity prices, particularly energy and agricultural goods, continue to contribute significantly to inflationary pressures, raising concerns about potential demand destruction."},
-                {"title": "Economic Indicators to Watch: {query}", 
-                 "summary": "Key economic data releases scheduled for this week could significantly impact {query} and related investments. Particular attention is focused on manufacturing PMI numbers and employment reports, which will provide insights into economic momentum. Consensus estimates suggest moderation in growth but no immediate recession signals, supporting a cautiously optimistic market outlook."},
-                {"title": "Financial Experts Weigh In On {query}", 
-                 "summary": "Leading economists and market strategists offer conflicting views on how {query} will respond to current economic conditions. While some point to resilient consumer spending and strong corporate balance sheets as positive factors, others highlight persistent inflation, geopolitical tensions, and tightening financial conditions as significant headwinds. The divergence in expert opinions reflects the complex and uncertain economic environment."}
-            ]
-            sources = ["The Economist", "Financial Times", "Wall Street Journal", "Business Insider", "Bloomberg"]
-            url_templates = [
-                "https://www.{source}.com/economy/{date}/global-trends-{query}-assessment",
-                "https://www.{source}.com/finance/{date}/central-bank-decisions-impact-on-{query}",
-                "https://www.{source}.com/markets/economy/{date}/inflation-concerns-{query}",
-                "https://www.{source}.com/economy/indicators/{date}/{query}-economic-data",
-                "https://www.{source}.com/analysis/{date}/expert-analysis-{query}"
-            ]
-        # Default general templates
-        else:
-            templates = [
-                {"title": "{query}: Latest Updates and Analysis", 
-                 "summary": "Get the latest information about {query} including market trends and expert analysis. Recent developments suggest increasing investor interest in this space, with trading volumes up significantly compared to historical averages. Industry specialists highlight changing consumer preferences and regulatory environment as key factors to monitor."},
-                {"title": "What Investors Should Know About {query}", 
-                 "summary": "Experts analyze the implications of recent developments related to {query} for investors. Key considerations include valuation metrics compared to sector peers, growth projections for the next 2-3 quarters, and potential catalysts that could drive price action. Risk factors have also been identified, including increased competition and regulatory uncertainties."},
-                {"title": "Breaking: New Developments in {query}", 
-                 "summary": "Recent news suggests significant changes are happening with {query}, potentially impacting markets. Industry insiders report strategic shifts that could reshape competitive dynamics. Preliminary market reaction has been cautiously positive, with increased trading activity observed across related securities and derivative instruments."},
-                {"title": "Market Analysis: {query} in Focus", 
-                 "summary": "Financial analysts are paying close attention to {query} as market conditions evolve. Technical indicators suggest a potential trend reversal after recent consolidation, while fundamental metrics remain strong relative to historical averages. Institutional positioning shows increased allocation to this segment, potentially signaling longer-term confidence."},
-                {"title": "Global Impact of {query} Assessed", 
-                 "summary": "Reports indicate that {query} is having ripple effects across global financial markets. Cross-asset correlations have increased, suggesting systemic importance beyond its immediate sector. International investors are reassessing exposure in light of recent developments, with particular attention to currency effects and regional economic implications."}
-            ]
-            sources = ["Financial Express", "Moneycontrol", "Economic Times", "Mint", "Business Standard"]
-            url_templates = [
-                "https://www.{source}.com/markets/{date}/{query}-latest-updates",
-                "https://www.{source}.com/investment/{date}/what-to-know-about-{query}",
-                "https://www.{source}.com/breaking-news/{date}/developments-{query}",
-                "https://www.{source}.com/analysis/{date}/{query}-market-focus",
-                "https://www.{source}.com/global/{date}/{query}-impact"
-            ]
-        
         results = []
+        
+        # Clean query for URL
+        clean_query = re.sub(r'[^a-zA-Z0-9]', '-', query.lower())
+        
+        # Today's date for URL
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        # List of potential news sources
+        sources = ["Bloomberg", "Reuters", "CNBC", "Forbes", "Financial Times", "The Economic Times", "Mint", "Business Standard"]
+        
+        # URL templates for simulated news articles
+        url_templates = [
+            "https://www.{source}.com/markets/stocks/{date}/{query}-news.html",
+            "https://www.{source}.com/finance/{date}/{query}-update.html",
+            "https://www.{source}.com/investing/{query}/{date}/article.html",
+            "https://www.{source}.com/news/markets/{date}/{query}.html",
+            "https://www.{source}.com/business/{query}-{date}.html"
+        ]
+        
+        # Replace with actual domain URLs
+        domain_mapping = {
+            "Bloomberg": "bloomberg.com",
+            "Reuters": "reuters.com",
+            "CNBC": "cnbc.com",
+            "Forbes": "forbes.com",
+            "Financial Times": "ft.com",
+            "The Economic Times": "economictimes.indiatimes.com",
+            "Mint": "livemint.com",
+            "Business Standard": "business-standard.com"
+        }
+
+        # Templates for news titles and summaries with placeholders
+        templates = [
+            {
+                "title": "{query} Shows Strong Performance in Recent Trading Session",
+                "summary": "Shares of {query} demonstrated robust performance in today's trading session, attracting investor attention amid positive market sentiment and strong sectoral trends."
+            },
+            {
+                "title": "Analysts Upgrade {query} Rating Citing Growth Potential",
+                "summary": "Investment firms have revised their outlook on {query}, upgrading their ratings based on the company's strong fundamentals and promising growth trajectory in its core business segments."
+            },
+            {
+                "title": "{query} Announces Quarterly Results Above Market Expectations",
+                "summary": "{query} reported quarterly earnings that exceeded analyst estimates, driven by stronger-than-anticipated revenue growth and effective cost management strategies implemented by leadership."
+            },
+            {
+                "title": "Market Volatility Impacts {query} Share Price",
+                "summary": "Amid broader market fluctuations, {query} experienced price movements as investors assessed the implications of economic indicators on future performance prospects."
+            },
+            {
+                "title": "{query} Expands Operations with Strategic Acquisition",
+                "summary": "In a move to strengthen its market position, {query} announced the acquisition of a complementary business, expected to drive synergies and expand its product offerings in key markets."
+            },
+            {
+                "title": "Investors React to {query}'s New Product Announcement",
+                "summary": "The market responded to {query}'s latest product launch, which analysts believe could significantly impact the company's revenue stream and competitive positioning in the industry."
+            },
+            {
+                "title": "Economic Outlook Raises Questions for {query} Growth Strategy",
+                "summary": "With shifting economic conditions, market observers are closely monitoring how {query}'s growth strategy will adapt to navigate potential challenges while capitalizing on emerging opportunities."
+            },
+            {
+                "title": "{query} Addresses Regulatory Challenges in Key Markets",
+                "summary": "Leadership at {query} outlined their approach to addressing evolving regulatory requirements, emphasizing compliance while maintaining focus on strategic business objectives."
+            },
+            {
+                "title": "Dividend Announcement Boosts Investor Interest in {query}",
+                "summary": "{query} announced a dividend payment that signals management's confidence in financial stability and commitment to delivering shareholder value despite market uncertainties."
+            },
+            {
+                "title": "Technical Analysis: {query} Approaches Key Resistance Levels",
+                "summary": "Chart patterns indicate {query} is testing important technical levels that could determine price direction in upcoming trading sessions, according to market technicians and analysts."
+            }
+        ]
+        
+        # Check if this is a non-listed entity
+        if any(entity in query.lower() for entity in self.non_listed_entities):
+            # Use appropriate templates for non-listed companies
+            non_listed_templates = [
+                {
+                    "title": "{query} Secures New Funding Round from Investors",
+                    "summary": "Private company {query} has raised a significant funding round from venture capital firms, valuing the company at a premium to its previous valuation and enabling expansion plans."
+                },
+                {
+                    "title": "{query} IPO Rumors Surface Again in Financial Markets",
+                    "summary": "Speculation about a potential public offering for {query} has resurfaced, though the company has not confirmed plans to list shares on any exchange in the immediate future."
+                },
+                {
+                    "title": "Privately-Held {query} Expands Market Presence",
+                    "summary": "{query}, which remains privately owned, announced significant expansion into new markets as it continues to grow its business operations outside the public markets."
+                },
+                {
+                    "title": "{query} Valuation Soars in Private Market Transactions",
+                    "summary": "Recent private market transactions have reportedly valued {query} significantly higher than previous rounds, though the company remains unlisted on public exchanges."
+                },
+                {
+                    "title": "Analysts Speculate on {query}'s Potential Market Value",
+                    "summary": "While {query} is not publicly traded, financial analysts have attempted to estimate what its market capitalization might be if it were to pursue a public listing."
+                }
+            ]
+            templates = non_listed_templates
+        
         # Generate news items
         for i in range(min(limit, len(templates))):
             template = templates[i]
-            source = random.choice(sources).lower()
+            source_name = random.choice(sources)
+            source_domain = domain_mapping.get(source_name, source_name.lower().replace(" ", "") + ".com")
             
             # Replace placeholders with the query
             title = template["title"].replace("{query}", query)
@@ -460,7 +670,7 @@ class NewsScraperService:
             
             # Generate URL with source-specific domain and date
             url_template = url_templates[i % len(url_templates)]
-            url = url_template.replace("{source}", source.lower()).replace("{date}", today).replace("{query}", clean_query)
+            url = url_template.replace("{source}", source_domain).replace("{date}", today).replace("{query}", clean_query)
             
             # Generate a random date in the last 7 days
             days_ago = random.randint(0, 7)
@@ -474,7 +684,7 @@ class NewsScraperService:
                 "title": title,
                 "summary": summary,
                 "date": news_date,
-                "source": source.title(),  # Capitalize for display
+                "source": source_name,  # Capitalize for display
                 "url": url,
                 "sentiment": sentiment,
                 "sentiment_score": sentiment_score
