@@ -34,35 +34,6 @@ This project is built with:
 
 ### Installation
 
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/JeetDev2104/NewsSense.git
-   cd NewsSense
-   ```
-
-2. Install frontend dependencies:
-
-   ```bash
-   cd newswise-financial-link
-   npm install
-   ```
-
-3. Set up the backend (if applicable):
-
-   ```bash
-   cd backend
-   pip install -r requirements.txt
-   ```
-
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-The application will be available at http://localhost:8080/
-
-## Project Structure
 
 ```
 newswise-financial-link/
