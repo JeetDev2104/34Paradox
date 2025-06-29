@@ -2,7 +2,7 @@ import axios from "axios";
 
 // Allow configuring the API base URL via environment variables or defaults
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8001/api";
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
 
 export interface NewsItem {
   title: string;
@@ -23,89 +23,110 @@ export interface NewsItem {
 
 export interface StockInfo {
   symbol: string;
+  name: string;
   price: number;
   change: number;
+  changePercent: number;
   volume: number;
+  marketCap: number;
+  sector: string;
+  industry?: string;
+  exchange?: string;
+  currency?: string;
+  lastUpdated: string;
+  dataSource?: string;
+  status?: string; // "listed" or "non-listed"
+  description?: string;
+
+  // Non-listed company specific fields
+  valuation?: string;
+  lastFundingRound?: string;
+  founded?: string;
+  headquarters?: string;
+  ceo?: string;
+
+  // Public company specific fields
+  pe?: number;
+  eps?: number;
+  dividend?: number;
+  dividendYield?: number;
+  high52Week?: number;
+  low52Week?: number;
+
+  // Historical data for charts
+  historical?: Array<{
+    date: string;
+    price: number;
+  }>;
+
   [key: string]: any;
 }
 
 export interface FundInfo {
-  scheme_name: string;
-  nav: number;
+  schemeName: string;
+  schemeCode: string;
   category: string;
-  [key: string]: any;
+  fundFamily: string;
+  nav: number;
+  change: number;
+  changePercent: number;
+  aum: number;
+  expenseRatio: number;
+  riskRating: string;
+  yearToDateReturn: number;
+  oneYearReturn: number;
+  threeYearReturn: number;
+  fiveYearReturn: number;
+  sinceInceptionReturn: number;
+  managers: string[];
+  launchDate: string;
+  holdings?: FundHolding[];
+}
+
+export interface FundHolding {
+  companyName: string;
+  symbol: string;
+  sector: string;
+  percentage: number;
 }
 
 export interface ETFInfo {
   symbol: string;
   name: string;
   price: number;
-  nav?: number;
-  assets?: number;
-  category?: string;
-  [key: string]: any;
+  change: number;
+  changePercent: number;
+  volume: number;
+  marketCap: number;
+  aum: number;
+  nav: number;
+  expenseRatio: number;
+  category: string;
+  issuer: string;
+  indexTracked: string;
+  yearToDateReturn: number;
+  oneYearReturn: number;
+  threeYearReturn: number;
+  fiveYearReturn: number;
+  holdings?: FundHolding[];
 }
 
-export interface HoldingInfo {
-  name: string;
-  holdingPercentage: number;
-  marketValue?: number;
-  sector?: string;
-  [key: string]: any;
+export interface ChatQuery {
+  query: string;
+  session_id?: string;
 }
 
 export interface ChatResponse {
   answer: string;
-  confidence: number;
-  is_prompt?: boolean;
-  related_news: Array<{
-    title: string;
-    summary: string;
-    sentiment: string;
-    sentiment_score: number;
-    date: string;
-    source: string;
-    url: string;
-  }>;
-  financial_data: {
-    stock?: {
-      symbol: string;
-      price: number;
-      [key: string]: any;
-    };
-    fund?: {
-      scheme_name: string;
-      nav: number;
-      [key: string]: any;
-    };
-    etf?: {
-      symbol: string;
-      name: string;
-      price: number;
-      [key: string]: any;
-    };
-    holdings?: Array<any>;
-  };
-  comparison_data?: Array<{
-    entity: string;
-    type: string;
-    data: any;
-  }>;
-  table_data?: {
-    headers: string[];
-    rows: Array<{
-      metric: string;
-      value1: any;
-      value2: any;
-      difference: string;
-    }>;
-  };
+  related_data?: any;
+  sources?: string[];
+  confidence?: number;
 }
 
 export interface AdvancedSearchQuery {
   query: string;
-  entity_type?: string;
-  date_range?: number;
+  entity_type?: string; // stock, fund, etc.
+  date_range?: number; // days
 }
 
 export const api = {
@@ -152,7 +173,7 @@ export const api = {
   getStockInfo: async (symbol: string) => {
     try {
       // First try direct lookup by symbol
-      const response = await axios.get<StockInfo>(
+      const response = await axios.get<{ status: string; data: StockInfo }>(
         `${API_BASE_URL}/stocks/${symbol}`
       );
       return response;
@@ -174,25 +195,10 @@ export const api = {
           return { data: searchResponse.data[0] };
         }
 
-        // If no data found, throw error to trigger fallback
         throw new Error("No stock data found");
       } catch (searchError) {
         console.error("Search fallback failed:", searchError);
-
-        // For demo/test purposes: Create mock data for unknown stocks
-        // In production, this should be removed
-        const mockData = {
-          symbol: symbol.toUpperCase(),
-          name: symbol.toUpperCase(),
-          price: Math.random() * 5000 + 500, // Random price between 500-5500
-          change: (Math.random() * 100 - 50).toFixed(2), // Random change between -50 and +50
-          changePercent: (Math.random() * 10 - 5).toFixed(2), // Random percent between -5% and +5%
-          volume: Math.floor(Math.random() * 10000000) + 100000,
-          marketCap: Math.floor(Math.random() * 10000000000) + 1000000000,
-          sector: "Unknown",
-        };
-
-        return { data: mockData };
+        throw new Error(`Could not find stock data for ${symbol}`);
       }
     }
   },
@@ -205,49 +211,15 @@ export const api = {
     return response.data;
   },
 
-  getAllFunds: async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/funds`);
-      if (response && response.data && response.data.status === "success") {
-        return response.data;
-      } else {
-        throw new Error("Invalid response format");
-      }
-    } catch (error) {
-      console.error("Error fetching funds:", error);
-      // Create minimal fallback data in case of API failure
-      return {
-        status: "success",
-        data: [
-          {
-            name: "HDFC Top 100 Fund",
-            type: "Mutual Fund",
-            nav: 850.25,
-            aum: 21500,
-            oneYearReturn: 15.8,
-            threeYearReturn: 12.5,
-            category: "Large Cap",
-            riskLevel: "Moderate",
-          },
-          {
-            name: "Nifty BeES",
-            type: "ETF",
-            nav: 220.15,
-            aum: 12800,
-            oneYearReturn: 18.2,
-            threeYearReturn: 14.7,
-            category: "Index Fund",
-            riskLevel: "Moderate",
-          },
-        ],
-      };
-    }
-  },
-
   getFundHoldings: async (schemeName: string) => {
-    const response = await axios.get<HoldingInfo[]>(
+    const response = await axios.get<FundHolding[]>(
       `${API_BASE_URL}/funds/${schemeName}/holdings`
     );
+    return response.data;
+  },
+
+  getAllFunds: async () => {
+    const response = await axios.get<FundInfo[]>(`${API_BASE_URL}/funds`);
     return response.data;
   },
 
@@ -257,7 +229,14 @@ export const api = {
     return response.data;
   },
 
-  // Unified financial data search
+  getETFHoldings: async (symbol: string) => {
+    const response = await axios.get<FundHolding[]>(
+      `${API_BASE_URL}/etfs/${symbol}/holdings`
+    );
+    return response.data;
+  },
+
+  // Search endpoints
   searchFinancialData: async (query: AdvancedSearchQuery) => {
     const response = await axios.post(
       `${API_BASE_URL}/financial-data/search`,

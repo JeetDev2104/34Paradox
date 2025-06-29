@@ -39,6 +39,17 @@ python -m spacy download en_core_web_sm
 
 4. Make sure MongoDB is running locally on port 27017
 
+5. (Optional) Configure Gemini API for enhanced AI responses:
+
+   a. Get an API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+   b. Set the API key using the provided utility script:
+
+   ```bash
+   python set_gemini_key.py YOUR_API_KEY
+   ```
+
+   Alternatively, you can set the `GEMINI_API_KEY` environment variable.
+
 ## Running the Application
 
 1. Start the FastAPI server:

@@ -10,10 +10,12 @@ import {
 } from "@/utils/mockData";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ChevronUp, ChevronDown, Search } from "lucide-react";
+import { ChevronUp, ChevronDown, Search, X } from "lucide-react";
 import api from "@/services/api";
 import { Input } from "@/components/ui/input";
 import axios from "axios";
+import StockDetail from "./StockDetail";
+import { Button } from "@/components/ui/button";
 
 // Define a union type for all financial instruments
 interface FinancialInstrument {
@@ -85,9 +87,10 @@ const Dashboard: React.FC = () => {
         try {
           const newsResponse = await axios.get(
             `${
-              import.meta.env.VITE_API_BASE_URL || "http://localhost:8001/api"
+              import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api"
             }/news/recent?limit=10`
           );
+          console.log("News API response:", newsResponse);
           if (newsResponse && newsResponse.data) {
             // Handle potential nested data structure
             const newsData = Array.isArray(newsResponse.data)
@@ -103,7 +106,7 @@ const Dashboard: React.FC = () => {
                 const instrumentNewsResponse = await axios.get(
                   `${
                     import.meta.env.VITE_API_BASE_URL ||
-                    "http://localhost:8001/api"
+                    "http://localhost:8000/api"
                   }/news/entity/${selectedInstrument.symbol}`
                 );
                 if (instrumentNewsResponse && instrumentNewsResponse.data) {
@@ -130,16 +133,95 @@ const Dashboard: React.FC = () => {
                 setRelevantNews(getRelevantNews(selectedInstrument.symbol));
               }
             } else {
-              throw new Error("No news data available");
+              console.log("No news data found, using mock data");
+              // Add mock news data if API returns empty
+              setRecentNews([
+                {
+                  title: "Market Update: Stock Market Shows Mixed Performance",
+                  summary:
+                    "Major indices showing mixed performance with technology sector leading gains.",
+                  sentiment: "neutral",
+                  sentiment_score: 0.5,
+                  entities: {
+                    companies: ["Apple", "Microsoft"],
+                    sectors: ["Technology", "Finance"],
+                    locations: ["US", "Global"],
+                  },
+                  keywords: ["stocks", "market", "technology", "trading"],
+                  date: new Date().toISOString(),
+                  source: "Sample Data",
+                  url: "https://example.com/market-update",
+                },
+                {
+                  title:
+                    "RBI Announces New Monetary Policy, Interest Rates Unchanged",
+                  summary:
+                    "The Reserve Bank of India (RBI) kept interest rates unchanged in its latest monetary policy announcement, citing inflation concerns.",
+                  sentiment: "neutral",
+                  sentiment_score: 0.6,
+                  entities: {
+                    companies: [],
+                    sectors: ["Banking", "Finance"],
+                    locations: ["India"],
+                  },
+                  keywords: [
+                    "rbi",
+                    "interest rates",
+                    "monetary policy",
+                    "inflation",
+                  ],
+                  date: new Date().toISOString(),
+                  source: "Financial News",
+                  url: "https://example.com/rbi-policy-update",
+                },
+              ]);
             }
           } else {
-            throw new Error("Invalid API response format");
+            console.error("Invalid news API response format:", newsResponse);
           }
         } catch (error) {
-          console.error("Error fetching news:", error);
-          // Fallback to mock data
-          setRecentNews(mockNews);
-          setRelevantNews(getRelevantNews(selectedInstrument.symbol));
+          console.error("Error fetching news from API:", error);
+          // Add mock news data on error
+          setRecentNews([
+            {
+              title: "Market Update: Stock Market Shows Mixed Performance",
+              summary:
+                "Major indices showing mixed performance with technology sector leading gains.",
+              sentiment: "neutral",
+              sentiment_score: 0.5,
+              entities: {
+                companies: ["Apple", "Microsoft"],
+                sectors: ["Technology", "Finance"],
+                locations: ["US", "Global"],
+              },
+              keywords: ["stocks", "market", "technology", "trading"],
+              date: new Date().toISOString(),
+              source: "Sample Data",
+              url: "https://example.com/market-update",
+            },
+            {
+              title:
+                "RBI Announces New Monetary Policy, Interest Rates Unchanged",
+              summary:
+                "The Reserve Bank of India (RBI) kept interest rates unchanged in its latest monetary policy announcement, citing inflation concerns.",
+              sentiment: "neutral",
+              sentiment_score: 0.6,
+              entities: {
+                companies: [],
+                sectors: ["Banking", "Finance"],
+                locations: ["India"],
+              },
+              keywords: [
+                "rbi",
+                "interest rates",
+                "monetary policy",
+                "inflation",
+              ],
+              date: new Date().toISOString(),
+              source: "Financial News",
+              url: "https://example.com/rbi-policy-update",
+            },
+          ]);
         }
       } catch (error) {
         console.error("Error in initial data fetch:", error);
@@ -166,7 +248,7 @@ const Dashboard: React.FC = () => {
       // Call the API endpoint to get stock data
       const response = await axios.get(
         `${
-          import.meta.env.VITE_API_BASE_URL || "http://localhost:8001/api"
+          import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api"
         }/stocks/${query.trim()}`
       );
 
@@ -203,7 +285,7 @@ const Dashboard: React.FC = () => {
         try {
           const newsResponse = await axios.get(
             `${
-              import.meta.env.VITE_API_BASE_URL || "http://localhost:8001/api"
+              import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api"
             }/news/entity/${stockData.symbol}`
           );
           if (newsResponse && newsResponse.data) {
@@ -283,7 +365,7 @@ const Dashboard: React.FC = () => {
         // Fetch news for this instrument using direct API call
         const newsResponse = await axios.get(
           `${
-            import.meta.env.VITE_API_BASE_URL || "http://localhost:8001/api"
+            import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api"
           }/news/entity/${instrument.symbol}`
         );
         if (newsResponse && newsResponse.data) {
@@ -782,6 +864,22 @@ const Dashboard: React.FC = () => {
           <ChatInterface />
         </div>
       </div>
+
+      {selectedInstrument && selectedInstrument.type === "stock" && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-bold">Stock Details</h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSelectedInstrument(null)}
+            >
+              <X className="mr-1 h-4 w-4" /> Close
+            </Button>
+          </div>
+          <StockDetail symbol={selectedInstrument.symbol} />
+        </div>
+      )}
     </div>
   );
 };
